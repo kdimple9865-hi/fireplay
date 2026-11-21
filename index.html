@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>불꽃놀이</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: linear-gradient(to bottom, #02030a 0%, #0a1030 60%, #1a1245 100%);
+    -webkit-tap-highlight-color: transparent;
+    -webkit-user-select: none;
+    user-select: none;
+    touch-action: manipulation;
+  }
+
+  .star {
+    position: fixed;
+    background: #fff;
+    border-radius: 50%;
+    pointer-events: none;
+    animation: twinkle 3s ease-in-out infinite;
+  }
+  @keyframes twinkle {
+    0%, 100% { opacity: 0.2; }
+    50% { opacity: 1; }
+  }
+
+  canvas {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    cursor: crosshair;
+  }
+
+  h1 {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 6vh);
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-family: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    font-size: clamp(2rem, 9vw, 4rem);
+    font-weight: 800;
+    letter-spacing: 0.15em;
+    color: #fff;
+    text-shadow: 0 0 10px #ffd86b, 0 0 25px #ff9a3c, 0 0 50px #ff5e62;
+    pointer-events: none;
+  }
+
+  .hint {
+    position: fixed;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 5vh);
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-family: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    font-size: clamp(0.9rem, 3.5vw, 1.1rem);
+    color: rgba(255, 255, 255, 0.6);
+    pointer-events: none;
+    transition: opacity 1s;
+  }
+  .hint.hide { opacity: 0; }
+
+  #mute {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 12px);
+    right: calc(env(safe-area-inset-right, 0px) + 12px);
+    z-index: 10;
+    padding: 8px 14px;
+    font-family: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+    font-size: 0.95rem;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.14);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  #mute:active { background: rgba(255, 255, 255, 0.3); }
+</style>
+</head>
+<body>
+
+<h1>불꽃놀이</h1>
+<canvas id="sky"></canvas>
+<button id="mute" type="button" aria-label="소리 켜기/끄기">🔊 소리 켜짐</button>
+<p class="hint" id="hint">화면을 터치하거나 클릭해 보세요 (소리가 납니다)</p>
+
+<script>
+(function () {
+  var canvas = document.getElementById('sky');
+  var ctx = canvas.getContext('2d');
+  var hint = document.getElementById('hint');
+  var muteBtn = document.getElementById('mute');
+  var W = 0, H = 0, dpr = 1;
+  var particles = [];
+
+  /* ---------- 소리 (Web Audio API로 직접 합성, 외부 파일 없음) ---------- */
+  var audio = null;       // AudioContext
+  var master = null;      // 전체 볼륨
+  var noiseBuf = null;    // 흰 잡음 버퍼
+  var muted = false;
+
+  function initAudio() {
+    if (audio) {
+      if (audio.state === 'suspended') audio.resume();
+      return;
+    }
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      audio = new AC();
+
+      var comp = audio.createDynamicsCompressor();   // 여러 소리가 겹쳐도 깨지지 않게
+      master = audio.createGain();
+      master.gain.value = muted ? 0 : 0.8;
+      master.connect(comp);
+      comp.connect(audio.destination);
+
+      var len = audio.sampleRate * 2;
+      noiseBuf = audio.createBuffer(1, len, audio.sampleRate);
+      var data = noiseBuf.getChannelData(0);
+      for (var i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    } catch (err) {
+      audio = null;
+    }
+  }
+
+  function noise(t, dur, type, freq, q, vol, sweepTo) {
+    var src = audio.createBufferSource();
+    src.buffer = noiseBuf;
+    src.loop = true;
+    var f = audio.createBiquadFilter();
+    f.type = type;
+    f.frequency.setValueAtTime(freq, t);
+    if (sweepTo) f.frequency.exponentialRampToValueAtTime(sweepTo, t + dur);
+    f.Q.value = q;
+    var g = audio.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(f); f.connect(g); g.connect(master);
+    src.start(t, Math.random());
+    src.stop(t + dur + 0.05);
+  }
+
+  function tone(t, dur, type, f0, f1, vol) {
+    var o = audio.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t);
+    if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    var g = audio.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(master);
+    o.start(t);
+    o.stop(t + dur + 0.05);
+  }
+
+  // 쾅! : 깊고 묵직한 폭발음
+  function soundBoom(t) {
+    noise(t, 1.3, 'lowpass', 1200 + Math.random() * 600, 0.7, 1.0, 60);
+    tone(t, 0.6, 'sine', 140 + Math.random() * 40, 38, 0.9);
+  }
+  // 펑! : 짧고 경쾌한 소리
+  function soundPop(t) {
+    noise(t, 0.25, 'bandpass', 900 + Math.random() * 1500, 0.9, 0.9);
+    tone(t, 0.18, 'triangle', 320 + Math.random() * 200, 90, 0.5);
+  }
+  // 파지직 : 불꽃이 튀는 소리
+  function soundCrackle(t) {
+    var n = 14 + Math.floor(Math.random() * 14);
+    for (var i = 0; i < n; i++) {
+      var tt = t + 0.12 + Math.random() * 1.1;
+      noise(tt, 0.03, 'highpass', 2500 + Math.random() * 3000, 0.7, 0.15 + Math.random() * 0.3);
+    }
+  }
+  // 휘리릭 : 떨어지는 휘파람 소리
+  function soundWhistle(t) {
+    var start = 2200 + Math.random() * 1200;
+    tone(t + 0.05, 0.9, 'sine', start, 350, 0.12);
+    noise(t + 0.05, 0.9, 'bandpass', start, 6, 0.08, 400);
+  }
+  // 반짝 : 맑은 종소리
+  function soundChime(t) {
+    var scale = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1318.5];
+    var n = 3 + Math.floor(Math.random() * 3);
+    for (var i = 0; i < n; i++) {
+      var f = scale[Math.floor(Math.random() * scale.length)];
+      var tt = t + 0.05 + i * (0.07 + Math.random() * 0.08);
+      tone(tt, 0.9, 'sine', f, f, 0.16);
+      tone(tt, 0.5, 'sine', f * 2, f * 2, 0.05);
+    }
+  }
+
+  function playSound(kind) {
+    if (!audio || muted) return;
+    var t = audio.currentTime + 0.01;
+    switch (kind) {
+      case 'ring':   soundPop(t); soundChime(t); break;
+      case 'multi':  soundBoom(t); soundCrackle(t); break;
+      default:
+        var r = Math.random();
+        if (r < 0.3)      { soundBoom(t); soundWhistle(t); }
+        else if (r < 0.55){ soundPop(t); soundCrackle(t); }
+        else if (r < 0.8) { soundBoom(t); soundCrackle(t); }
+        else              { soundPop(t); soundWhistle(t); }
+    }
+  }
+
+  muteBtn.addEventListener('click', function () {
+    initAudio();
+    muted = !muted;
+    if (master) master.gain.value = muted ? 0 : 0.8;
+    muteBtn.textContent = muted ? '🔇 소리 꺼짐' : '🔊 소리 켜짐';
+  });
+
+  /* ---------- 별 ---------- */
+  for (var i = 0; i < 90; i++) {
+    var s = document.createElement('div');
+    var size = Math.random() * 2 + 1;
+    s.className = 'star';
+    s.style.width = s.style.height = size + 'px';
+    s.style.left = Math.random() * 100 + 'vw';
+    s.style.top = Math.random() * 70 + 'vh';
+    s.style.animationDelay = (Math.random() * 3) + 's';
+    s.style.animationDuration = (2 + Math.random() * 3) + 's';
+    document.body.appendChild(s);
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  /* ---------- 불꽃 ---------- */
+  function burst(x, y) {
+    var baseHue = Math.random() * 360;
+    var multi = Math.random() < 0.4;           // 두 가지 색이 섞인 불꽃
+    var ring = Math.random() < 0.3;            // 동그란 고리 모양 불꽃
+    var count = 90 + Math.floor(Math.random() * 50);
+    var power = 3 + Math.random() * 3;
+
+    for (var i = 0; i < count; i++) {
+      var angle = (Math.PI * 2 * i / count) + Math.random() * 0.1;
+      var speed = ring ? power : Math.random() * power + 0.5;
+      var hue = multi && i % 2 ? (baseHue + 150) % 360 : baseHue + Math.random() * 30;
+      particles.push({
+        x: x, y: y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 1,
+        decay: 0.008 + Math.random() * 0.012,
+        size: 1.5 + Math.random() * 1.5,
+        hue: hue
+      });
+    }
+
+    // 중심의 번쩍임
+    for (var j = 0; j < 12; j++) {
+      particles.push({
+        x: x, y: y,
+        vx: (Math.random() - 0.5) * 1.2,
+        vy: (Math.random() - 0.5) * 1.2,
+        life: 1,
+        decay: 0.05,
+        size: 3 + Math.random() * 3,
+        hue: 50
+      });
+    }
+
+    playSound(ring ? 'ring' : (multi ? 'multi' : 'normal'));
+  }
+
+  function onPointer(e) {
+    e.preventDefault();
+    initAudio();   // 브라우저 정책상 첫 터치 때 소리를 켬
+    burst(e.clientX, e.clientY);
+    hint.classList.add('hide');
+  }
+  canvas.addEventListener('pointerdown', onPointer);
+
+  function frame() {
+    // 잔상 효과: 이전 프레임을 서서히 지움
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalCompositeOperation = 'lighter';
+
+    for (var i = particles.length - 1; i >= 0; i--) {
+      var p = particles[i];
+      p.vx *= 0.98;
+      p.vy *= 0.98;
+      p.vy += 0.045;          // 중력
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life -= p.decay;
+
+      if (p.life <= 0) {
+        particles.splice(i, 1);
+        continue;
+      }
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * p.life + 0.3, 0, Math.PI * 2);
+      ctx.fillStyle = 'hsla(' + p.hue + ', 100%, 60%, ' + p.life + ')';
+      ctx.fill();
+    }
+
+    requestAnimationFrame(frame);
+  }
+  frame();
+})();
+</script>
+</body>
+</html>
